@@ -6,19 +6,22 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="UV防御剤チェッカー", layout="wide")
 
+# ========= 帯域定義 =========
 BAND_DEFS = [
     {"label": "UVB", "start": 280, "end": 320, "color": "rgba(102, 178, 255, 0.28)"},
-    {"label": "UVA", "start": 320, "end": 340, "color": "rgba(160, 214, 255, 0.28)"},
+    {"label": "UVA", "start": 320, "end": 340, "color": "rgba(170, 220, 255, 0.28)"},
     {"label": "ロングUVA", "start": 340, "end": 400, "color": "rgba(255, 204, 102, 0.28)"},
 ]
 
-ABSORBER_COLOR = "#1f77b4"
-SCATTER_COLOR = "#6c757d"
+ABSORBER_COLOR = "#1f77b4"   # 紫外線吸収剤
+SCATTER_COLOR = "#6c757d"    # 紫外線散乱剤
 
+# ========= 紫外線防御剤辞書 =========
 UV_FILTERS = [
     {
         "name_jp": "メトキシケイヒ酸エチルヘキシル",
         "name_en": "Octinoxate",
+        "short_label": "Octinoxate",
         "kind": "紫外線吸収剤",
         "aliases": [
             "メトキシケイヒ酸エチルヘキシル",
@@ -32,6 +35,7 @@ UV_FILTERS = [
     {
         "name_jp": "オクトクリレン",
         "name_en": "Octocrylene",
+        "short_label": "Octocrylene",
         "kind": "紫外線吸収剤",
         "aliases": ["オクトクリレン", "octocrylene"],
         "ranges": [(290, 360)],
@@ -40,6 +44,7 @@ UV_FILTERS = [
     {
         "name_jp": "ジエチルアミノヒドロキシベンゾイル安息香酸ヘキシル",
         "name_en": "DHHB / Uvinul A Plus",
+        "short_label": "DHHB",
         "kind": "紫外線吸収剤",
         "aliases": [
             "ジエチルアミノヒドロキシベンゾイル安息香酸ヘキシル",
@@ -53,6 +58,7 @@ UV_FILTERS = [
     {
         "name_jp": "ビスエチルヘキシルオキシフェノールメトキシフェニルトリアジン",
         "name_en": "BEMT / Tinosorb S",
+        "short_label": "BEMT",
         "kind": "紫外線吸収剤",
         "aliases": [
             "ビスエチルヘキシルオキシフェノールメトキシフェニルトリアジン",
@@ -68,6 +74,7 @@ UV_FILTERS = [
     {
         "name_jp": "メチレンビスベンゾトリアゾリルテトラメチルブチルフェノール",
         "name_en": "MBBT / Tinosorb M",
+        "short_label": "MBBT",
         "kind": "紫外線吸収剤",
         "aliases": [
             "メチレンビスベンゾトリアゾリルテトラメチルブチルフェノール",
@@ -83,6 +90,7 @@ UV_FILTERS = [
     {
         "name_jp": "フェニルベンズイミダゾールスルホン酸",
         "name_en": "Ensulizole / PBSA",
+        "short_label": "PBSA",
         "kind": "紫外線吸収剤",
         "aliases": [
             "フェニルベンズイミダゾールスルホン酸",
@@ -96,6 +104,7 @@ UV_FILTERS = [
     {
         "name_jp": "エチルヘキシルトリアゾン",
         "name_en": "Ethylhexyl Triazone",
+        "short_label": "EHT",
         "kind": "紫外線吸収剤",
         "aliases": [
             "エチルヘキシルトリアゾン",
@@ -107,7 +116,8 @@ UV_FILTERS = [
     },
     {
         "name_jp": "ドロメトリゾールトリシロキサン",
-        "name_en": "Drometrizole Trisiloxane",
+        "name_en": "Drometrizole Trisiloxane / Mexoryl XL",
+        "short_label": "Mexoryl XL",
         "kind": "紫外線吸収剤",
         "aliases": [
             "ドロメトリゾールトリシロキサン",
@@ -120,6 +130,7 @@ UV_FILTERS = [
     {
         "name_jp": "テレフタリリデンジカンフルスルホン酸",
         "name_en": "Ecamsule / Mexoryl SX",
+        "short_label": "Mexoryl SX",
         "kind": "紫外線吸収剤",
         "aliases": [
             "テレフタリリデンジカンフルスルホン酸",
@@ -133,6 +144,7 @@ UV_FILTERS = [
     {
         "name_jp": "t-ブチルメトキシジベンゾイルメタン",
         "name_en": "Avobenzone",
+        "short_label": "Avobenzone",
         "kind": "紫外線吸収剤",
         "aliases": [
             "t-ブチルメトキシジベンゾイルメタン",
@@ -146,6 +158,7 @@ UV_FILTERS = [
     {
         "name_jp": "酸化亜鉛",
         "name_en": "Zinc Oxide",
+        "short_label": "酸化亜鉛",
         "kind": "紫外線散乱剤",
         "aliases": ["酸化亜鉛", "zinc oxide"],
         "ranges": [(280, 400)],
@@ -154,6 +167,7 @@ UV_FILTERS = [
     {
         "name_jp": "酸化チタン",
         "name_en": "Titanium Dioxide",
+        "short_label": "酸化チタン",
         "kind": "紫外線散乱剤",
         "aliases": ["酸化チタン", "titanium dioxide"],
         "ranges": [(280, 340)],
@@ -161,24 +175,11 @@ UV_FILTERS = [
     },
 ]
 
+# ========= ユーティリティ =========
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).lower()
     text = re.sub(r"\s+", "", text)
     return text
-
-def extract_uv_filters(text: str):
-    norm = normalize(text)
-    found = []
-    seen = set()
-
-    for item in UV_FILTERS:
-        for alias in item["aliases"]:
-            if normalize(alias) in norm:
-                if item["name_jp"] not in seen:
-                    found.append(item)
-                    seen.add(item["name_jp"])
-                break
-    return found
 
 def overlap(start1, end1, start2, end2):
     return max(start1, start2) < min(end1, end2)
@@ -189,6 +190,34 @@ def covered_labels(ranges):
         if any(overlap(start, end, band["start"], band["end"]) for start, end in ranges):
             labels.append(band["label"])
     return " / ".join(labels)
+
+def extract_uv_filters(text: str):
+    norm = normalize(text)
+    found = []
+
+    for item in UV_FILTERS:
+        hit_positions = []
+        for alias in item["aliases"]:
+            alias_norm = normalize(alias)
+            pos = norm.find(alias_norm)
+            if pos != -1:
+                hit_positions.append(pos)
+
+        if hit_positions:
+            item_copy = item.copy()
+            item_copy["_first_pos"] = min(hit_positions)
+            found.append(item_copy)
+
+    found.sort(key=lambda x: x["_first_pos"])
+
+    unique = []
+    seen = set()
+    for item in found:
+        if item["name_jp"] not in seen:
+            unique.append(item)
+            seen.add(item["name_jp"])
+
+    return unique
 
 def plot_filters(found, product_name=""):
     fig = go.Figure()
@@ -207,35 +236,52 @@ def plot_filters(found, product_name=""):
             y=1.08,
             yref="paper",
             text=f"<b>{band['label']}</b>",
-            showarrow=False
+            showarrow=False,
+            font=dict(size=13),
         )
 
-    # バー
-    y_labels = [item["name_jp"] for item in found]
+    short_names = [item["short_label"] for item in found]
 
-    for idx, item in enumerate(found):
+    for item in found:
         color = ABSORBER_COLOR if item["kind"] == "紫外線吸収剤" else SCATTER_COLOR
         for start, end in item["ranges"]:
             fig.add_trace(
                 go.Bar(
                     x=[end - start],
-                    y=[item["name_jp"]],
+                    y=[item["short_label"]],
                     base=[start],
                     orientation="h",
                     marker=dict(color=color),
-                    name=item["kind"],
                     hovertemplate=(
-                        f"{item['name_jp']}<br>"
+                        f"<b>{item['name_jp']}</b><br>"
+                        f"{item['name_en']}<br>"
                         f"{item['kind']}<br>"
-                        f"{start}–{end} nm<extra></extra>"
+                        f"{start}–{end} nm<br>"
+                        f"{item['memo']}<extra></extra>"
                     ),
                     showlegend=False,
                 )
             )
 
-    # 凡例用
-    fig.add_trace(go.Bar(x=[0], y=[None], name="紫外線吸収剤", marker=dict(color=ABSORBER_COLOR), showlegend=True))
-    fig.add_trace(go.Bar(x=[0], y=[None], name="紫外線散乱剤", marker=dict(color=SCATTER_COLOR), showlegend=True))
+    # 凡例用ダミー
+    fig.add_trace(
+        go.Bar(
+            x=[0],
+            y=[None],
+            name="紫外線吸収剤",
+            marker=dict(color=ABSORBER_COLOR),
+            showlegend=True,
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=[0],
+            y=[None],
+            name="紫外線散乱剤",
+            marker=dict(color=SCATTER_COLOR),
+            showlegend=True,
+        )
+    )
 
     title = "紫外線防御剤のカバー領域"
     if product_name.strip():
@@ -244,20 +290,53 @@ def plot_filters(found, product_name=""):
     fig.update_layout(
         title=title,
         barmode="overlay",
-        xaxis=dict(title="波長 (nm)", range=[280, 400], dtick=20),
-        yaxis=dict(title="", autorange="reversed"),
-        height=max(420, 90 * len(found) + 120),
-        margin=dict(l=20, r=20, t=80, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(
+            title="波長 (nm)",
+            range=[280, 400],
+            dtick=20,
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.08)",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="",
+            autorange="reversed",
+            automargin=True,
+            categoryorder="array",
+            categoryarray=short_names,
+            tickfont=dict(size=13),
+        ),
+        height=max(430, 72 * len(found) + 130),
+        margin=dict(l=110, r=20, t=95, b=30),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.01,
+            xanchor="right",
+            x=1,
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
     )
 
     return fig
 
+# ========= UI =========
 st.title("日焼け止め 紫外線防御剤チェッカー")
 
-product_name = st.text_input("商品名（任意）", placeholder="例: by365 パウダリーUVジェル")
+st.write("全成分を貼ると、紫外線防御剤を抽出して種類数とカバー領域を表示します。")
 
-sample = "水、エタノール、メトキシケイヒ酸エチルヘキシル、ビスエチルヘキシルオキシフェノールメトキシフェニルトリアジン、ジエチルアミノヒドロキシベンゾイル安息香酸ヘキシル、オクトクリレン"
+product_name = st.text_input(
+    "商品名（任意）",
+    placeholder="例: by365 パウダリーUVジェル"
+)
+
+sample = (
+    "水、エタノール、メトキシケイヒ酸エチルヘキシル、"
+    "ビスエチルヘキシルオキシフェノールメトキシフェニルトリアジン、"
+    "ジエチルアミノヒドロキシベンゾイル安息香酸ヘキシル、"
+    "オクトクリレン"
+)
 
 ingredients = st.text_area(
     "全成分をここに貼ってください",
@@ -293,10 +372,20 @@ if st.button("解析する"):
 
         absorber_count = sum(1 for x in found if x["kind"] == "紫外線吸収剤")
         scatter_count = sum(1 for x in found if x["kind"] == "紫外線散乱剤")
-        st.write(f"吸収剤: **{absorber_count}** / 散乱剤: **{scatter_count}**")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("紫外線吸収剤", absorber_count)
+        with col2:
+            st.metric("紫外線散乱剤", scatter_count)
 
         fig = plot_filters(found, product_name)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
 
 st.caption("※ カバー領域は実務用の簡易表示です。厳密な吸収スペクトルそのものではありません。")
 st.caption("※ 効果の強さは配合量・製剤設計・SPF/PA試験結果で大きく変わるため、この図だけでは断定できません。")
+st.caption("※ 商品名だけで自動的に全成分を取得する機能は、現時点ではまだ入っていません。")
