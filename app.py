@@ -1,7 +1,5 @@
 import re
 import unicodedata
-import csv
-from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -228,20 +226,8 @@ DB_COLUMNS = [
     "notes",
 ]
 
-for key in [
-    "manual_product_name",
-    "manual_company_name",
-    "manual_brand",
-    "manual_spf",
-    "manual_pa",
-    "manual_image_url",
-    "manual_official_url",
-    "manual_info_url",
-    "manual_ingredients",
-    "manual_notes",
-]:
-    if key not in st.session_state:
-        st.session_state[key] = ""
+if "manual_ingredients" not in st.session_state:
+    st.session_state["manual_ingredients"] = ""
 
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", str(text or "")).lower()
@@ -563,15 +549,6 @@ def filter_product_db(df, query):
     )
     return df[mask].reset_index(drop=True)
 
-def make_csv_row(product_name, company_name, brand, spf, pa, image_url, official_url, info_url, ingredients, notes):
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        product_name, company_name, brand, spf, pa,
-        image_url, official_url, info_url, ingredients, notes
-    ])
-    return output.getvalue().strip("\r\n")
-
 def render_link_line(label, url):
     if str(url).strip():
         st.markdown(f"**{label}:** [開く]({url})")
@@ -657,7 +634,7 @@ def render_analysis_block(
         st.warning("紫外線防御剤が見つかりませんでした。")
         return
 
-    st.dataframe(build_found_df(found), use_container_width=True)
+    st.dataframe(build_found_df(found), use_container_width=True, hide_index=True)
 
     col1, col2 = st.columns([1.35, 1])
     with col1:
@@ -683,6 +660,58 @@ def render_analysis_block(
         )
 
     with st.expander("全成分を表示"):
+        st.write(ingredients)
+
+def render_manual_analysis(ingredients):
+    ingredients = str(ingredients or "").strip()
+    if not ingredients:
+        st.warning("成分表を貼ってください。")
+        return
+
+    found = extract_uv_filters(ingredients)
+    summary = summarize_filter_lists(found)
+    score = score_analysis(found)
+
+    st.subheader("手入力解析結果")
+    st.write(f"**見つかった紫外線防御剤: {summary['total_count']}種類**")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("UV防御スコア", f'{score["total"]}/100')
+    with c2:
+        st.metric("防御剤合計", summary["total_count"])
+    with c3:
+        st.metric("吸収剤数", summary["absorber_count"])
+    with c4:
+        st.metric("散乱剤数", summary["scatter_count"])
+
+    st.markdown(
+        f"""
+        <div class="soft-card">
+        <b>紫外線吸収剤の種類</b><br>
+        {(" / ".join(summary["absorbers"]) if summary["absorbers"] else "なし")}<br><br>
+        <b>紫外線散乱剤の種類</b><br>
+        {(" / ".join(summary["scatters"]) if summary["scatters"] else "なし")}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not found:
+        st.warning("紫外線防御剤が見つかりませんでした。")
+        return
+
+    st.dataframe(build_found_df(found), use_container_width=True, hide_index=True)
+
+    col1, col2 = st.columns([1.35, 1])
+    with col1:
+        fig = plot_filters(found, "手入力成分のカバー領域")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with col2:
+        score_fig = make_score_chart(score)
+        st.plotly_chart(score_fig, use_container_width=True, config={"displayModeBar": False})
+
+    with st.expander("貼り付けた成分表を表示"):
         st.write(ingredients)
 
 def make_comparison_summary(df, selected_names):
@@ -742,11 +771,22 @@ db_df = load_product_db()
 
 st.title("日焼け止め 紫外線防御剤チェッカー")
 st.markdown(
-    '<div class="soft-card">辞書から見る、手入力で解析する、商品同士を比較する、の3つを入れています。</div>',
+    '<div class="soft-card">手入力解析、辞書、比較の順です。手入力は成分表をコピペするだけです。</div>',
     unsafe_allow_html=True,
 )
 
-tab_dict, tab_manual, tab_compare = st.tabs(["辞書", "手入力解析", "比較"])
+tab_manual, tab_dict, tab_compare = st.tabs(["手入力解析", "辞書", "比較"])
+
+with tab_manual:
+    st.subheader("手入力解析")
+    st.text_area(
+        "全成分をここに貼ってください",
+        key="manual_ingredients",
+        height=220,
+        placeholder="例: 水、エタノール、メトキシケイヒ酸エチルヘキシル、……",
+    )
+    if st.button("この成分表を解析する", use_container_width=True):
+        render_manual_analysis(st.session_state["manual_ingredients"])
 
 with tab_dict:
     st.subheader("辞書")
@@ -774,10 +814,10 @@ with tab_dict:
             st.dataframe(
                 preview_df,
                 use_container_width=True,
+                hide_index=True,
                 column_config={
                     "商品画像": st.column_config.ImageColumn("商品画像", width="small"),
                 },
-                hide_index=True,
             )
 
             selected_name = st.selectbox(
@@ -799,73 +839,6 @@ with tab_dict:
                 ingredients=selected_row["ingredients"],
                 notes=selected_row["notes"],
             )
-
-with tab_manual:
-    st.subheader("手入力解析")
-
-    st.text_input("商品名（任意）", key="manual_product_name", placeholder="例: アネッサ パーフェクトUV")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.text_input("会社名（任意）", key="manual_company_name", placeholder="例: 資生堂")
-    with c2:
-        st.text_input("ブランド名（任意）", key="manual_brand", placeholder="例: アネッサ")
-    with c3:
-        st.text_input("メモ（任意）", key="manual_notes", placeholder="例: ミルク")
-
-    c4, c5, c6, c7 = st.columns(4)
-    with c4:
-        st.text_input("SPF（任意）", key="manual_spf", placeholder="例: SPF50+")
-    with c5:
-        st.text_input("PA（任意）", key="manual_pa", placeholder="例: PA++++")
-    with c6:
-        st.text_input("画像URL（任意）", key="manual_image_url", placeholder="画像の直接URL")
-    with c7:
-        st.text_input("公式サイトURL（任意）", key="manual_official_url", placeholder="公式ページURL")
-
-    st.text_input("情報サイトURL（任意）", key="manual_info_url", placeholder="@cosmeなど")
-
-    st.text_area(
-        "全成分をここに貼ってください",
-        key="manual_ingredients",
-        height=200,
-        placeholder="例: 水、エタノール、……",
-    )
-
-    b1, b2 = st.columns(2)
-    with b1:
-        manual_parse = st.button("この内容で解析する", use_container_width=True)
-    with b2:
-        make_csv = st.button("辞書追加用の1行を作る", use_container_width=True)
-
-    if manual_parse:
-        render_analysis_block(
-            product_name=st.session_state["manual_product_name"],
-            company_name=st.session_state["manual_company_name"],
-            brand=st.session_state["manual_brand"],
-            spf=st.session_state["manual_spf"],
-            pa=st.session_state["manual_pa"],
-            image_url=st.session_state["manual_image_url"],
-            official_url=st.session_state["manual_official_url"],
-            info_url=st.session_state["manual_info_url"],
-            ingredients=st.session_state["manual_ingredients"],
-            notes=st.session_state["manual_notes"],
-        )
-
-    if make_csv:
-        row_text = make_csv_row(
-            st.session_state["manual_product_name"],
-            st.session_state["manual_company_name"],
-            st.session_state["manual_brand"],
-            st.session_state["manual_spf"],
-            st.session_state["manual_pa"],
-            st.session_state["manual_image_url"],
-            st.session_state["manual_official_url"],
-            st.session_state["manual_info_url"],
-            st.session_state["manual_ingredients"],
-            st.session_state["manual_notes"],
-        )
-        st.code(row_text, language="text")
-        st.caption("この1行を products.csv の末尾に追加すると、辞書タブと比較タブでも使えます。")
 
 with tab_compare:
     st.subheader("比較")
@@ -901,4 +874,4 @@ with tab_compare:
 
 st.caption("※ UV防御スコアは、配合されている防御剤の種類・担当帯域・広帯域性・安定性目安から作った簡易スコアです。")
 st.caption("※ 実際の強さは配合量や製剤設計、実測SPF/PAで大きく変わるため、絶対評価ではありません。")
-st.caption("※ 商品画像は画像の直接URLが必要です。サイトによっては表示されないことがあります。")
+st.caption("※ 辞書を大量に増やすなら、Deep Research でブランド単位に収集して products.csv に追加していくのが効率的です。")
