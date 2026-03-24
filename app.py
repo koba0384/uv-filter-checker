@@ -2,23 +2,19 @@ import re
 import unicodedata
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-import japanize_matplotlib
-from matplotlib.patches import Patch
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="UV防御剤チェッカー", layout="wide")
 
-# ====== 帯域定義 ======
 BAND_DEFS = [
-    {"label": "UVB", "start": 280, "end": 320, "color": "#8ecae6"},
-    {"label": "UVA", "start": 320, "end": 340, "color": "#bde0fe"},
-    {"label": "ロングUVA", "start": 340, "end": 400, "color": "#ffd6a5"},
+    {"label": "UVB", "start": 280, "end": 320, "color": "rgba(102, 178, 255, 0.28)"},
+    {"label": "UVA", "start": 320, "end": 340, "color": "rgba(160, 214, 255, 0.28)"},
+    {"label": "ロングUVA", "start": 340, "end": 400, "color": "rgba(255, 204, 102, 0.28)"},
 ]
 
-ABSORBER_COLOR = "#1f77b4"   # 吸収剤
-SCATTER_COLOR = "#6c757d"    # 散乱剤
+ABSORBER_COLOR = "#1f77b4"
+SCATTER_COLOR = "#6c757d"
 
-# ====== 紫外線防御剤辞書 ======
 UV_FILTERS = [
     {
         "name_jp": "メトキシケイヒ酸エチルヘキシル",
@@ -178,10 +174,9 @@ def extract_uv_filters(text: str):
     for item in UV_FILTERS:
         for alias in item["aliases"]:
             if normalize(alias) in norm:
-                key = item["name_jp"]
-                if key not in seen:
+                if item["name_jp"] not in seen:
                     found.append(item)
-                    seen.add(key)
+                    seen.add(item["name_jp"])
                 break
     return found
 
@@ -191,80 +186,73 @@ def overlap(start1, end1, start2, end2):
 def covered_labels(ranges):
     labels = []
     for band in BAND_DEFS:
-        band_hit = False
-        for start, end in ranges:
-            if overlap(start, end, band["start"], band["end"]):
-                band_hit = True
-                break
-        if band_hit:
+        if any(overlap(start, end, band["start"], band["end"]) for start, end in ranges):
             labels.append(band["label"])
     return " / ".join(labels)
 
 def plot_filters(found, product_name=""):
-    if not found:
-        return None
-
-    fig_h = max(4, 0.7 * len(found) + 2.5)
-    fig, ax = plt.subplots(figsize=(12, fig_h))
+    fig = go.Figure()
 
     # 背景帯
     for band in BAND_DEFS:
-        ax.axvspan(
-            band["start"],
-            band["end"],
-            color=band["color"],
-            alpha=0.35,
-            zorder=0
+        fig.add_vrect(
+            x0=band["start"],
+            x1=band["end"],
+            fillcolor=band["color"],
+            line_width=0,
+            layer="below",
         )
-        ax.text(
-            (band["start"] + band["end"]) / 2,
-            1.02,
-            band["label"],
-            transform=ax.get_xaxis_transform(),
-            ha="center",
-            va="bottom",
-            fontsize=12,
-            fontweight="bold"
+        fig.add_annotation(
+            x=(band["start"] + band["end"]) / 2,
+            y=1.08,
+            yref="paper",
+            text=f"<b>{band['label']}</b>",
+            showarrow=False
         )
 
-    y_positions = list(range(len(found)))
+    # バー
     y_labels = [item["name_jp"] for item in found]
 
-    for y, item in zip(y_positions, found):
-        bar_color = ABSORBER_COLOR if item["kind"] == "紫外線吸収剤" else SCATTER_COLOR
+    for idx, item in enumerate(found):
+        color = ABSORBER_COLOR if item["kind"] == "紫外線吸収剤" else SCATTER_COLOR
         for start, end in item["ranges"]:
-            ax.broken_barh(
-                [(start, end - start)],
-                (y - 0.35, 0.7),
-                facecolors=bar_color,
-                edgecolors="none",
-                zorder=2
+            fig.add_trace(
+                go.Bar(
+                    x=[end - start],
+                    y=[item["name_jp"]],
+                    base=[start],
+                    orientation="h",
+                    marker=dict(color=color),
+                    name=item["kind"],
+                    hovertemplate=(
+                        f"{item['name_jp']}<br>"
+                        f"{item['kind']}<br>"
+                        f"{start}–{end} nm<extra></extra>"
+                    ),
+                    showlegend=False,
+                )
             )
 
-    ax.set_xlim(280, 400)
-    ax.set_ylim(-0.5, len(found) - 0.5)
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(y_labels, fontsize=10)
-    ax.invert_yaxis()
-    ax.set_xlabel("波長 (nm)")
-    ax.set_ylabel("")
-    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    # 凡例用
+    fig.add_trace(go.Bar(x=[0], y=[None], name="紫外線吸収剤", marker=dict(color=ABSORBER_COLOR), showlegend=True))
+    fig.add_trace(go.Bar(x=[0], y=[None], name="紫外線散乱剤", marker=dict(color=SCATTER_COLOR), showlegend=True))
 
     title = "紫外線防御剤のカバー領域"
     if product_name.strip():
         title = f"{product_name.strip()} の紫外線防御剤カバー領域"
-    ax.set_title(title, fontsize=14, pad=20)
 
-    legend_handles = [
-        Patch(facecolor=ABSORBER_COLOR, label="紫外線吸収剤"),
-        Patch(facecolor=SCATTER_COLOR, label="紫外線散乱剤"),
-    ]
-    ax.legend(handles=legend_handles, loc="lower right")
+    fig.update_layout(
+        title=title,
+        barmode="overlay",
+        xaxis=dict(title="波長 (nm)", range=[280, 400], dtick=20),
+        yaxis=dict(title="", autorange="reversed"),
+        height=max(420, 90 * len(found) + 120),
+        margin=dict(l=20, r=20, t=80, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
 
-    plt.tight_layout()
     return fig
 
-# ====== UI ======
 st.title("日焼け止め 紫外線防御剤チェッカー")
 
 product_name = st.text_input("商品名（任意）", placeholder="例: by365 パウダリーUVジェル")
@@ -308,7 +296,7 @@ if st.button("解析する"):
         st.write(f"吸収剤: **{absorber_count}** / 散乱剤: **{scatter_count}**")
 
         fig = plot_filters(found, product_name)
-        st.pyplot(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
 st.caption("※ カバー領域は実務用の簡易表示です。厳密な吸収スペクトルそのものではありません。")
 st.caption("※ 効果の強さは配合量・製剤設計・SPF/PA試験結果で大きく変わるため、この図だけでは断定できません。")
