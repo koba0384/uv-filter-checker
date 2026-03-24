@@ -1,22 +1,77 @@
 import re
 import unicodedata
+import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+import easyocr
 
 st.set_page_config(page_title="UV防御剤チェッカー", layout="wide")
 
-# ========= 帯域定義 =========
+# =========================
+# デザイン
+# =========================
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: linear-gradient(180deg, #fcfaf7 0%, #f8f5f0 100%);
+    }
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 980px;
+    }
+    h1, h2, h3 {
+        color: #3b3a36;
+        letter-spacing: 0.01em;
+    }
+    [data-testid="stMetricValue"] {
+        color: #4a4a46;
+    }
+    div[data-testid="stTextArea"] textarea {
+        background-color: #fffdfa !important;
+    }
+    div[data-testid="stFileUploader"] section {
+        background-color: #fffdfa;
+    }
+    .soft-note {
+        padding: 0.8rem 1rem;
+        background: rgba(255,255,255,0.6);
+        border: 1px solid #ece6dc;
+        border-radius: 14px;
+        color: #5f5b55;
+        font-size: 0.95rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# =========================
+# 帯域定義
+# =========================
 BAND_DEFS = [
-    {"label": "UVB", "start": 280, "end": 320, "color": "rgba(102, 178, 255, 0.28)"},
-    {"label": "UVA", "start": 320, "end": 340, "color": "rgba(170, 220, 255, 0.28)"},
-    {"label": "ロングUVA", "start": 340, "end": 400, "color": "rgba(255, 204, 102, 0.28)"},
+    {"label": "UVB", "start": 280, "end": 320, "color": "rgba(98, 164, 255, 0.16)"},
+    {"label": "UVA", "start": 320, "end": 340, "color": "rgba(255, 179, 102, 0.16)"},
+    {"label": "ロングUVA", "start": 340, "end": 400, "color": "rgba(255, 107, 107, 0.14)"},
 ]
 
-ABSORBER_COLOR = "#1f77b4"   # 紫外線吸収剤
-SCATTER_COLOR = "#6c757d"    # 紫外線散乱剤
+ABSORBER_FILL = "#7C838C"   # グレー
+ABSORBER_LINE = "#666C74"
 
-# ========= 紫外線防御剤辞書 =========
+SCATTER_FILL = "#F6F2EA"    # 白っぽい
+SCATTER_LINE = "#A9A39A"
+
+PLOT_BG = "#FFFCF8"
+GRID_COLOR = "rgba(120, 120, 120, 0.10)"
+AXIS_COLOR = "#D8D1C6"
+TEXT_COLOR = "#4A4741"
+
+# =========================
+# 紫外線防御剤辞書
+# =========================
 UV_FILTERS = [
     {
         "name_jp": "メトキシケイヒ酸エチルヘキシル",
@@ -175,7 +230,25 @@ UV_FILTERS = [
     },
 ]
 
-# ========= ユーティリティ =========
+SAMPLE_TEXT = (
+    "水、エタノール、メトキシケイヒ酸エチルヘキシル、"
+    "ビスエチルヘキシルオキシフェノールメトキシフェニルトリアジン、"
+    "ジエチルアミノヒドロキシベンゾイル安息香酸ヘキシル、"
+    "オクトクリレン"
+)
+
+# =========================
+# セッション初期化
+# =========================
+if "ingredients_text" not in st.session_state:
+    st.session_state["ingredients_text"] = SAMPLE_TEXT
+
+if "ocr_done" not in st.session_state:
+    st.session_state["ocr_done"] = False
+
+# =========================
+# ユーティリティ
+# =========================
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).lower()
     text = re.sub(r"\s+", "", text)
@@ -219,7 +292,43 @@ def extract_uv_filters(text: str):
 
     return unique
 
-def plot_filters(found, product_name=""):
+def preprocess_image_for_ocr(image: Image.Image) -> np.ndarray:
+    img = image.convert("RGB")
+
+    # 大きすぎ/小さすぎ対策
+    max_w = 1800
+    if img.width > max_w:
+        ratio = max_w / img.width
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+
+    if img.width < 1200:
+        ratio = 1200 / img.width
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+
+    gray = ImageOps.grayscale(img)
+    gray = ImageOps.autocontrast(gray)
+    gray = ImageEnhance.Contrast(gray).enhance(1.8)
+    gray = gray.filter(ImageFilter.SHARPEN)
+
+    return np.array(gray)
+
+@st.cache_resource
+def get_ocr_reader():
+    return easyocr.Reader(["ja", "en"], gpu=False, verbose=False)
+
+def run_ocr(image: Image.Image) -> str:
+    reader = get_ocr_reader()
+    processed = preprocess_image_for_ocr(image)
+    results = reader.readtext(processed, detail=0, paragraph=True)
+
+    if not results:
+        return ""
+
+    text = "\n".join([r.strip() for r in results if str(r).strip()])
+    text = re.sub(r"[ ]{2,}", " ", text)
+    return text.strip()
+
+def plot_filters(found):
     fig = go.Figure()
 
     # 背景帯
@@ -233,17 +342,23 @@ def plot_filters(found, product_name=""):
         )
         fig.add_annotation(
             x=(band["start"] + band["end"]) / 2,
-            y=1.08,
+            y=1.03,
             yref="paper",
             text=f"<b>{band['label']}</b>",
             showarrow=False,
-            font=dict(size=13),
+            font=dict(size=12, color=TEXT_COLOR),
         )
 
     short_names = [item["short_label"] for item in found]
 
     for item in found:
-        color = ABSORBER_COLOR if item["kind"] == "紫外線吸収剤" else SCATTER_COLOR
+        if item["kind"] == "紫外線吸収剤":
+            fill_color = ABSORBER_FILL
+            line_color = ABSORBER_LINE
+        else:
+            fill_color = SCATTER_FILL
+            line_color = SCATTER_LINE
+
         for start, end in item["ranges"]:
             fig.add_trace(
                 go.Bar(
@@ -251,7 +366,10 @@ def plot_filters(found, product_name=""):
                     y=[item["short_label"]],
                     base=[start],
                     orientation="h",
-                    marker=dict(color=color),
+                    marker=dict(
+                        color=fill_color,
+                        line=dict(color=line_color, width=1.2),
+                    ),
                     hovertemplate=(
                         f"<b>{item['name_jp']}</b><br>"
                         f"{item['name_en']}<br>"
@@ -269,7 +387,10 @@ def plot_filters(found, product_name=""):
             x=[0],
             y=[None],
             name="紫外線吸収剤",
-            marker=dict(color=ABSORBER_COLOR),
+            marker=dict(
+                color=ABSORBER_FILL,
+                line=dict(color=ABSORBER_LINE, width=1.2),
+            ),
             showlegend=True,
         )
     )
@@ -278,25 +399,27 @@ def plot_filters(found, product_name=""):
             x=[0],
             y=[None],
             name="紫外線散乱剤",
-            marker=dict(color=SCATTER_COLOR),
+            marker=dict(
+                color=SCATTER_FILL,
+                line=dict(color=SCATTER_LINE, width=1.2),
+            ),
             showlegend=True,
         )
     )
 
-    title = "紫外線防御剤のカバー領域"
-    if product_name.strip():
-        title = f"{product_name.strip()} の紫外線防御剤カバー領域"
-
     fig.update_layout(
-        title=title,
         barmode="overlay",
         xaxis=dict(
             title="波長 (nm)",
             range=[280, 400],
             dtick=20,
             showgrid=True,
-            gridcolor="rgba(0,0,0,0.08)",
+            gridcolor=GRID_COLOR,
             zeroline=False,
+            showline=True,
+            linecolor=AXIS_COLOR,
+            tickfont=dict(color=TEXT_COLOR),
+            title_font=dict(color=TEXT_COLOR),
         ),
         yaxis=dict(
             title="",
@@ -304,88 +427,141 @@ def plot_filters(found, product_name=""):
             automargin=True,
             categoryorder="array",
             categoryarray=short_names,
-            tickfont=dict(size=13),
+            tickfont=dict(size=13, color=TEXT_COLOR),
+            showline=False,
         ),
-        height=max(430, 72 * len(found) + 130),
-        margin=dict(l=110, r=20, t=95, b=30),
+        height=max(430, 74 * len(found) + 130),
+        margin=dict(l=115, r=18, t=52, b=95),
         legend=dict(
             orientation="h",
-            yanchor="bottom",
-            y=1.01,
-            xanchor="right",
-            x=1,
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(255,255,255,0)",
+            font=dict(color=TEXT_COLOR),
         ),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        plot_bgcolor=PLOT_BG,
+        paper_bgcolor=PLOT_BG,
+        font=dict(
+            family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic', sans-serif",
+            color=TEXT_COLOR,
+        ),
     )
 
     return fig
 
-# ========= UI =========
+# =========================
+# UI
+# =========================
 st.title("日焼け止め 紫外線防御剤チェッカー")
+st.markdown(
+    '<div class="soft-note">成分テキストを貼るか、全成分表画像をアップしてOCRで読み取りできます。</div>',
+    unsafe_allow_html=True,
+)
 
-st.write("全成分を貼ると、紫外線防御剤を抽出して種類数とカバー領域を表示します。")
+st.write("")
 
 product_name = st.text_input(
     "商品名（任意）",
-    placeholder="例: by365 パウダリーUVジェル"
+    placeholder="例: アネッサ パーフェクトUV スキンケアミルク"
 )
 
-sample = (
-    "水、エタノール、メトキシケイヒ酸エチルヘキシル、"
-    "ビスエチルヘキシルオキシフェノールメトキシフェニルトリアジン、"
-    "ジエチルアミノヒドロキシベンゾイル安息香酸ヘキシル、"
-    "オクトクリレン"
+input_mode = st.radio(
+    "入力方法",
+    ["テキスト入力", "画像アップロード"],
+    horizontal=True
 )
 
-ingredients = st.text_area(
-    "全成分をここに貼ってください",
-    value=sample,
-    height=180
-)
+if input_mode == "テキスト入力":
+    st.text_area(
+        "全成分をここに貼ってください",
+        key="ingredients_text",
+        height=180,
+    )
 
-if st.button("解析する"):
-    found = extract_uv_filters(ingredients)
+else:
+    uploaded_file = st.file_uploader(
+        "全成分表の画像をアップロード",
+        type=["png", "jpg", "jpeg", "webp"]
+    )
 
-    if product_name.strip():
-        st.subheader(f"{product_name.strip()} の解析結果")
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="アップロード画像", use_container_width=True)
+
+        if st.button("画像から文字を読み取る"):
+            with st.spinner("画像を読み取り中… 最初の1回は少し時間がかかることがあります"):
+                ocr_text = run_ocr(image)
+                st.session_state["ingredients_text"] = ocr_text
+                st.session_state["ocr_done"] = True
+                st.rerun()
+
+    st.text_area(
+        "OCR結果（必要ならここを直してから解析）",
+        key="ingredients_text",
+        height=220,
+    )
+
+col_a, col_b = st.columns([1, 1])
+
+with col_a:
+    parse_clicked = st.button("解析する", use_container_width=True)
+
+with col_b:
+    if st.button("サンプルを入れる", use_container_width=True):
+        st.session_state["ingredients_text"] = SAMPLE_TEXT
+        st.rerun()
+
+if parse_clicked:
+    ingredients = st.session_state.get("ingredients_text", "").strip()
+
+    if not ingredients:
+        st.warning("全成分テキストが空です。テキストを貼るか、画像を読み取ってください。")
     else:
-        st.subheader("解析結果")
+        found = extract_uv_filters(ingredients)
 
-    st.write(f"**見つかった紫外線防御剤: {len(found)}種類**")
+        st.write("")
+        if product_name.strip():
+            st.subheader(f"{product_name.strip()} の解析結果")
+        else:
+            st.subheader("解析結果")
 
-    if not found:
-        st.warning("紫外線防御剤が見つかりませんでした。")
-    else:
-        rows = []
-        for item in found:
-            rows.append({
-                "成分名": item["name_jp"],
-                "英名": item["name_en"],
-                "分類": item["kind"],
-                "カバー領域": covered_labels(item["ranges"]),
-                "メモ": item["memo"],
-            })
+        st.write(f"**見つかった紫外線防御剤: {len(found)}種類**")
 
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True)
+        if not found:
+            st.warning("紫外線防御剤が見つかりませんでした。OCR誤認識の可能性もあるので、OCR結果を少し修正してみてください。")
+        else:
+            rows = []
+            for item in found:
+                rows.append({
+                    "成分名": item["name_jp"],
+                    "英名": item["name_en"],
+                    "分類": item["kind"],
+                    "カバー領域": covered_labels(item["ranges"]),
+                    "メモ": item["memo"],
+                })
 
-        absorber_count = sum(1 for x in found if x["kind"] == "紫外線吸収剤")
-        scatter_count = sum(1 for x in found if x["kind"] == "紫外線散乱剤")
+            df = pd.DataFrame(rows)
+            st.dataframe(df, use_container_width=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("紫外線吸収剤", absorber_count)
-        with col2:
-            st.metric("紫外線散乱剤", scatter_count)
+            absorber_count = sum(1 for x in found if x["kind"] == "紫外線吸収剤")
+            scatter_count = sum(1 for x in found if x["kind"] == "紫外線散乱剤")
 
-        fig = plot_filters(found, product_name)
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={"displayModeBar": False},
-        )
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("紫外線吸収剤", absorber_count)
+            with c2:
+                st.metric("紫外線散乱剤", scatter_count)
+
+            st.markdown("#### カバー領域")
+            fig = plot_filters(found)
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+            )
 
 st.caption("※ カバー領域は実務用の簡易表示です。厳密な吸収スペクトルそのものではありません。")
 st.caption("※ 効果の強さは配合量・製剤設計・SPF/PA試験結果で大きく変わるため、この図だけでは断定できません。")
-st.caption("※ 商品名だけで自動的に全成分を取得する機能は、現時点ではまだ入っていません。")
+st.caption("※ OCRは画像の傾き・反射・ぼけで誤認識することがあります。")
