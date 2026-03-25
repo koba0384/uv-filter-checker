@@ -300,7 +300,57 @@ def summarize_filter_lists(found):
         "total_count": len(found),
     }
 
-def score_analysis(found):
+def durability_score(product_name, notes, ingredients):
+    text = f"{product_name} {notes}"
+    n_text = normalize(text)
+
+    strong_keywords = [
+        "スーパーウォータープルーフ",
+        "superwaterproof",
+        "waterproof",
+        "ウォータープルーフ",
+        "耐水",
+        "汗水",
+        "汗・水",
+        "汗水に強い",
+        "こすれに強い",
+        "フリクションプルーフ",
+        "スウェットプルーフ",
+    ]
+    soft_keywords = [
+        "レジャー",
+        "海",
+        "プール",
+        "スポーツ",
+        "アウトドア",
+    ]
+
+    if any(k in n_text for k in [normalize(x) for x in strong_keywords]):
+        return 10, "ウォータープルーフ等の記載あり"
+
+    if any(k in n_text for k in [normalize(x) for x in soft_keywords]):
+        return 7, "レジャー/スポーツ向け表現あり"
+
+    oil_markers = [
+        "ジメチコン",
+        "トリメチルシロキシケイ酸",
+        "イソドデカン",
+        "カプリリルメチコン",
+        "シクロペンタシロキサン",
+        "イソヘキサデカン",
+        "セバシン酸ジイソプロピル",
+        "炭酸ジカプリリル",
+        "トリエチルヘキサノイン",
+        "安息香酸アルキル",
+    ]
+    oil_count = sum(1 for marker in oil_markers if marker in str(ingredients))
+    if oil_count >= 4:
+        return 6, "油性/皮膜系成分が多め"
+    if oil_count >= 2:
+        return 3, "油性/皮膜系成分がやや多め"
+    return 0, "耐汗・耐水の明確な根拠弱め"
+
+def score_analysis(found, product_name="", notes="", ingredients=""):
     all_ranges = []
     for item in found:
         all_ranges.extend(item["ranges"])
@@ -309,22 +359,65 @@ def score_analysis(found):
     uva_width = coverage_width(all_ranges, 320, 340)
     long_uva_width = coverage_width(all_ranges, 340, 400)
 
-    uvb_score = round(25 * (uvb_width / 40)) if uvb_width else 0
-    uva_score = round(20 * (uva_width / 20)) if uva_width else 0
+    # UVAを重視
+    uvb_score = round(10 * (uvb_width / 40)) if uvb_width else 0
+    uva_score = round(15 * (uva_width / 20)) if uva_width else 0
     long_uva_score = round(25 * (long_uva_width / 60)) if long_uva_width else 0
 
-    diversity_score = min(10, len(found) * 2)
-    stability_score = min(10, round(sum(item.get("stability", 0) for item in found) / 2))
-    broad_count = sum(1 for item in found if len(set(covered_labels(item["ranges"]).split(" / "))) == 3)
-    broad_score = 5 if broad_count >= 1 else 0
+    total_filters = len(found)
+    diversity_score = min(10, total_filters * 2)
 
-    kinds = {item["kind"] for item in found}
-    type_score = 5 if len(kinds) == 2 else (3 if len(kinds) == 1 and found else 0)
+    hybrid_score = 8 if ({x["kind"] for x in found} == {"紫外線吸収剤", "紫外線散乱剤"}) else 0
 
-    total = min(
-        100,
-        uvb_score + uva_score + long_uva_score + diversity_score + stability_score + broad_score + type_score
+    stability_score = 0
+    if found:
+        stability_score = min(8, round(sum(item.get("stability", 0) for item in found) / len(found) * 1.6))
+
+    broad_count = sum(
+        1 for item in found
+        if coverage_width(item["ranges"], 280, 320) > 0
+        and coverage_width(item["ranges"], 320, 340) > 0
+        and coverage_width(item["ranges"], 340, 400) > 0
     )
+    broad_score = min(6, broad_count * 3)
+
+    durability_points, durability_note = durability_score(product_name, notes, ingredients)
+
+    raw_total = (
+        uvb_score
+        + uva_score
+        + long_uva_score
+        + diversity_score
+        + hybrid_score
+        + stability_score
+        + broad_score
+        + durability_points
+    )
+
+    penalties = 0
+    n_text = normalize(f"{product_name} {notes}")
+
+    # ミスト/スプレーは厳しめ
+    if any(k in n_text for k in [normalize("ミスト"), normalize("スプレー"), "mist", "spray"]):
+        penalties += 8
+
+    # 耐水性が弱く、しかもミスト/スプレーならさらに厳しく
+    if durability_points <= 2 and any(k in n_text for k in [normalize("ミスト"), normalize("スプレー"), "mist", "spray"]):
+        penalties += 10
+
+    # ロングUVAが弱いものは減点
+    if long_uva_width < 20:
+        penalties += 8
+    elif long_uva_width < 35:
+        penalties += 4
+
+    # 防御剤が少なすぎる場合
+    if total_filters <= 1:
+        penalties += 8
+    elif total_filters == 2:
+        penalties += 4
+
+    total = max(5, min(92, raw_total - penalties))
 
     return {
         "total": total,
@@ -332,9 +425,12 @@ def score_analysis(found):
         "uva_score": uva_score,
         "long_uva_score": long_uva_score,
         "diversity_score": diversity_score,
+        "hybrid_score": hybrid_score,
         "stability_score": stability_score,
         "broad_score": broad_score,
-        "type_score": type_score,
+        "durability_score": durability_points,
+        "durability_note": durability_note,
+        "penalties": penalties,
         "band_summary": {
             "UVB": f"{int(uvb_width)}/40 nm",
             "UVA": f"{int(uva_width)}/20 nm",
@@ -467,24 +563,28 @@ def plot_filters(found, title_text="紫外線防御剤のカバー領域"):
     return fig
 
 def make_score_chart(score_dict, title_text="参考スコア内訳"):
-    labels = ["UVB", "UVA", "ロングUVA", "種類数", "安定性目安", "広帯域", "剤タイプ"]
+    labels = ["UVB", "UVA", "ロングUVA", "種類数", "ハイブリッド", "耐汗/耐水", "安定性", "広帯域", "減点"]
     values = [
         score_dict["uvb_score"],
         score_dict["uva_score"],
         score_dict["long_uva_score"],
         score_dict["diversity_score"],
+        score_dict["hybrid_score"],
+        score_dict["durability_score"],
         score_dict["stability_score"],
         score_dict["broad_score"],
-        score_dict["type_score"],
+        -score_dict["penalties"],
     ]
     colors = [
         "rgba(88, 163, 255, 0.72)",
         "rgba(255, 170, 92, 0.72)",
         "rgba(255, 107, 107, 0.72)",
         "rgba(145, 145, 145, 0.72)",
-        "rgba(145, 145, 145, 0.56)",
-        "rgba(145, 145, 145, 0.42)",
-        "rgba(145, 145, 145, 0.32)",
+        "rgba(125, 125, 125, 0.72)",
+        "rgba(110, 110, 110, 0.58)",
+        "rgba(125, 125, 125, 0.45)",
+        "rgba(125, 125, 125, 0.35)",
+        "rgba(220, 90, 90, 0.55)",
     ]
 
     fig = go.Figure(
@@ -500,10 +600,10 @@ def make_score_chart(score_dict, title_text="参考スコア内訳"):
     )
     fig.update_layout(
         title=title_text,
-        xaxis=dict(range=[0, 25], showgrid=True, gridcolor=GRID_COLOR, zeroline=False),
+        xaxis=dict(range=[-20, 30], showgrid=True, gridcolor=GRID_COLOR, zeroline=True),
         yaxis=dict(autorange="reversed"),
         margin=dict(l=40, r=20, t=50, b=20),
-        height=360,
+        height=420,
         plot_bgcolor=PLOT_BG,
         paper_bgcolor=PLOT_BG,
         font=dict(
@@ -572,7 +672,7 @@ def render_analysis_block(
 
     found = extract_uv_filters(ingredients)
     summary = summarize_filter_lists(found)
-    score = score_analysis(found)
+    score = score_analysis(found, product_name=product_name, notes=notes, ingredients=ingredients)
 
     title = str(product_name).strip() or "解析結果"
     st.subheader(title)
@@ -610,7 +710,7 @@ def render_analysis_block(
         st.write("")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("UV防御スコア", f'{score["total"]}/100')
+            st.metric("UV防御スコア", f'{score["total"]}/92')
         with c2:
             st.metric("防御剤合計", summary["total_count"])
         with c3:
@@ -624,7 +724,9 @@ def render_analysis_block(
             <b>紫外線吸収剤の種類</b><br>
             {(" / ".join(summary["absorbers"]) if summary["absorbers"] else "なし")}<br><br>
             <b>紫外線散乱剤の種類</b><br>
-            {(" / ".join(summary["scatters"]) if summary["scatters"] else "なし")}
+            {(" / ".join(summary["scatters"]) if summary["scatters"] else "なし")}<br><br>
+            <b>耐汗/耐水の目安</b><br>
+            {score["durability_note"]}
             </div>
             """,
             unsafe_allow_html=True,
@@ -651,9 +753,11 @@ def render_analysis_block(
             UVA: {score["uva_score"]}点（{score["band_summary"]["UVA"]}）<br>
             ロングUVA: {score["long_uva_score"]}点（{score["band_summary"]["ロングUVA"]}）<br>
             種類数: {score["diversity_score"]}点<br>
+            ハイブリッド: {score["hybrid_score"]}点<br>
+            耐汗/耐水: {score["durability_score"]}点<br>
             安定性目安: {score["stability_score"]}点<br>
             広帯域: {score["broad_score"]}点<br>
-            剤タイプ: {score["type_score"]}点
+            減点: -{score["penalties"]}点
             </div>
             """,
             unsafe_allow_html=True,
@@ -670,14 +774,14 @@ def render_manual_analysis(ingredients):
 
     found = extract_uv_filters(ingredients)
     summary = summarize_filter_lists(found)
-    score = score_analysis(found)
+    score = score_analysis(found, ingredients=ingredients)
 
     st.subheader("手入力解析結果")
     st.write(f"**見つかった紫外線防御剤: {summary['total_count']}種類**")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("UV防御スコア", f'{score["total"]}/100')
+        st.metric("UV防御スコア", f'{score["total"]}/92')
     with c2:
         st.metric("防御剤合計", summary["total_count"])
     with c3:
@@ -691,7 +795,9 @@ def render_manual_analysis(ingredients):
         <b>紫外線吸収剤の種類</b><br>
         {(" / ".join(summary["absorbers"]) if summary["absorbers"] else "なし")}<br><br>
         <b>紫外線散乱剤の種類</b><br>
-        {(" / ".join(summary["scatters"]) if summary["scatters"] else "なし")}
+        {(" / ".join(summary["scatters"]) if summary["scatters"] else "なし")}<br><br>
+        <b>耐汗/耐水の目安</b><br>
+        {score["durability_note"]}
         </div>
         """,
         unsafe_allow_html=True,
@@ -719,7 +825,12 @@ def make_comparison_summary(df, selected_names):
     for name in selected_names:
         row = df[df["product_name"] == name].iloc[0]
         found = extract_uv_filters(str(row["ingredients"]))
-        score = score_analysis(found)
+        score = score_analysis(
+            found,
+            product_name=row["product_name"],
+            notes=row["notes"],
+            ingredients=row["ingredients"],
+        )
         summary = summarize_filter_lists(found)
 
         rows.append({
@@ -733,6 +844,7 @@ def make_comparison_summary(df, selected_names):
             "散乱剤数": summary["scatter_count"],
             "吸収剤の種類": " / ".join(summary["absorbers"]),
             "散乱剤の種類": " / ".join(summary["scatters"]),
+            "耐汗/耐水": score["durability_note"],
             "UVB": score["band_summary"]["UVB"],
             "UVA": score["band_summary"]["UVA"],
             "ロングUVA": score["band_summary"]["ロングUVA"],
@@ -755,7 +867,7 @@ def make_comparison_chart(summary_df):
     fig.update_layout(
         title="比較: UV防御スコア",
         xaxis=dict(title="商品名"),
-        yaxis=dict(title="UV防御スコア", range=[0, 100], showgrid=True, gridcolor=GRID_COLOR),
+        yaxis=dict(title="UV防御スコア", range=[0, 92], showgrid=True, gridcolor=GRID_COLOR),
         margin=dict(l=30, r=20, t=50, b=90),
         height=420,
         plot_bgcolor=PLOT_BG,
@@ -767,15 +879,53 @@ def make_comparison_chart(summary_df):
     )
     return fig
 
+def build_ranking_df(df):
+    rows = []
+    for _, row in df.iterrows():
+        found = extract_uv_filters(str(row["ingredients"]))
+        summary = summarize_filter_lists(found)
+        score = score_analysis(
+            found,
+            product_name=row["product_name"],
+            notes=row["notes"],
+            ingredients=row["ingredients"],
+        )
+        rows.append({
+            "商品画像": row["image_url"],
+            "商品名": row["product_name"],
+            "会社名": row["company_name"],
+            "ブランド名": row["brand"],
+            "UV防御スコア": score["total"],
+            "防御剤合計": summary["total_count"],
+            "吸収剤数": summary["absorber_count"],
+            "散乱剤数": summary["scatter_count"],
+            "耐汗/耐水": score["durability_note"],
+            "UVB": score["band_summary"]["UVB"],
+            "UVA": score["band_summary"]["UVA"],
+            "ロングUVA": score["band_summary"]["ロングUVA"],
+            "公式サイト": row["official_url"],
+            "情報サイト": row["info_url"],
+        })
+    ranking_df = pd.DataFrame(rows)
+    if ranking_df.empty:
+        return ranking_df
+    ranking_df = ranking_df.sort_values(
+        by=["UV防御スコア", "ロングUVA", "防御剤合計"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+    ranking_df.index = ranking_df.index + 1
+    ranking_df.insert(0, "順位", ranking_df.index)
+    return ranking_df
+
 db_df = load_product_db()
 
 st.title("日焼け止め 紫外線防御剤チェッカー")
 st.markdown(
-    '<div class="soft-card">手入力解析、辞書、比較の順です。手入力は成分表をコピペするだけです。</div>',
+    '<div class="soft-card">点数を厳しめに改訂。UVA重視、ハイブリッド・種類数・耐汗/耐水を加点し、ミスト/スプレー等は減点しています。</div>',
     unsafe_allow_html=True,
 )
 
-tab_manual, tab_dict, tab_compare = st.tabs(["手入力解析", "辞書", "比較"])
+tab_manual, tab_dict, tab_compare, tab_ranking = st.tabs(["手入力解析", "辞書", "比較", "ランキング"])
 
 with tab_manual:
     st.subheader("手入力解析")
@@ -872,6 +1022,51 @@ with tab_compare:
             compare_fig = make_comparison_chart(summary_df)
             st.plotly_chart(compare_fig, use_container_width=True, config={"displayModeBar": False})
 
-st.caption("※ UV防御スコアは、配合されている防御剤の種類・担当帯域・広帯域性・安定性目安から作った簡易スコアです。")
-st.caption("※ 実際の強さは配合量や製剤設計、実測SPF/PAで大きく変わるため、絶対評価ではありません。")
-st.caption("※ 辞書を大量に増やすなら、Deep Research でブランド単位に収集して products.csv に追加していくのが効率的です。")
+with tab_ranking:
+    st.subheader("現時点でのランキング")
+
+    if db_df.empty:
+        st.info("ランキングを出すには products.csv に商品を入れてください。")
+    else:
+        ranking_df = build_ranking_df(db_df)
+
+        top_n = st.slider("表示件数", min_value=5, max_value=min(50, len(ranking_df)), value=min(20, len(ranking_df)))
+        st.dataframe(
+            ranking_df.head(top_n),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "商品画像": st.column_config.ImageColumn("商品画像", width="small"),
+                "公式サイト": st.column_config.LinkColumn("公式サイト"),
+                "情報サイト": st.column_config.LinkColumn("情報サイト"),
+            },
+        )
+
+        chart_df = ranking_df.head(top_n).copy()
+        fig = go.Figure(
+            go.Bar(
+                x=chart_df["商品名"],
+                y=chart_df["UV防御スコア"],
+                marker=dict(color="rgba(120, 126, 136, 0.82)"),
+                hovertemplate="%{x}<br>UV防御スコア: %{y}<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            title="ランキング: UV防御スコア",
+            xaxis=dict(title="商品名"),
+            yaxis=dict(title="UV防御スコア", range=[0, 92], showgrid=True, gridcolor=GRID_COLOR),
+            margin=dict(l=30, r=20, t=50, b=120),
+            height=460,
+            plot_bgcolor=PLOT_BG,
+            paper_bgcolor=PLOT_BG,
+            font=dict(
+                family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic', sans-serif",
+                color=TEXT_COLOR,
+            ),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+st.caption("※ UV防御スコアは 92 点満点の簡易評価です。")
+st.caption("※ SPF / PA は参考表示のみで、スコア計算には使っていません。")
+st.caption("※ UVA を UVB より重視し、ハイブリッド処方・防御剤の種類数・耐汗/耐水の目安を加点しています。")
+st.caption("※ 耐汗/耐水は notes・商品名・成分からの推定を含むため、絶対評価ではありません。")
